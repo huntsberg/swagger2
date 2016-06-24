@@ -1,17 +1,18 @@
 package Swagger2::Client;
 use Mojo::Base -base;
+
 use Mojo::JSON;
 use Mojo::UserAgent;
 use Mojo::Util;
 use Carp ();
 use Swagger2;
-use Swagger2::SchemaValidator;
+use JSON::Validator::OpenAPI;
 
 use constant DEBUG => $ENV{SWAGGER2_DEBUG} || 0;
 
 has base_url   => sub { Mojo::URL->new(shift->_swagger->base_url) };
 has ua         => sub { Mojo::UserAgent->new };
-has _validator => sub { Swagger2::SchemaValidator->new; };
+has _validator => sub { JSON::Validator::OpenAPI->new; };
 
 sub generate {
   my $class = shift;
@@ -125,11 +126,11 @@ sub _validate_request {
   my (%data, $body, @e);
 
   for my $p (@{$op_spec->{parameters} || []}) {
-    my ($in, $name) = @$p{qw( in name )};
+    my ($in, $name, $type) = @$p{qw(in name type)};
     my $value = exists $args->{$name} ? $args->{$name} : $p->{default};
 
     if (defined $value or Swagger2::_is_true($p->{required})) {
-      my $type = $p->{type} || 'object';
+      $type ||= 'object';
 
       if (defined $value) {
         $value += 0 if $type =~ /^(?:integer|number)/ and $value =~ /^\d/;
@@ -143,6 +144,12 @@ sub _validate_request {
           map { $_->{path} = $_->{path} eq "/" ? "/$name" : "/$name$_->{path}"; $_; }
           $self->_validator->validate($value, $p->{schema});
       }
+      elsif ($in eq 'formData' and $type eq 'file') {
+
+        # if this is a file parameter and there is data then do nothing
+        # as file data cannot be validated
+        warn "[Swagger2::Client] Validate $in $name (Skipping file)\n" if DEBUG;
+      }
       else {
         warn "[Swagger2::Client] Validate $in $name=$value\n" if DEBUG;
         push @e, $self->_validator->validate({$name => $value}, {properties => {$name => $p}});
@@ -154,9 +161,6 @@ sub _validate_request {
     }
     elsif ($in eq 'query') {
       $query->param($name => $value);
-    }
-    elsif ($in eq 'file') {
-      $body = $value;
     }
     elsif ($in eq 'header') {
       $req->[1]{$name} = $value;
